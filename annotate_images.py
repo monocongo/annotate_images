@@ -12,6 +12,13 @@ from object_detection.utils import label_map_util
 # ------------------------------------------------------------------------------
 if __name__ == '__main__':
 
+    # Usage:
+    #
+    # $ python annotate_images.py --model /faster_rcnn/frozen_inference_graph.pb \
+    #       --labels /git/models/research/object_detection/data/mscoco_label_map.pbtxt \
+    #       --images_dir /data/imgs/fedex/images \
+    #       --annotations_dir /data/imgs/fedex/kitti \
+
     # parse the command line arguments
     args_parser = argparse.ArgumentParser()
     args_parser.add_argument(
@@ -39,13 +46,6 @@ if __name__ == '__main__':
         help="Directory where annotations will be written",
     )
     args_parser.add_argument(
-        "-n",
-        "--num_classes",
-        type=int,
-        required=True,
-        help="# of class labels",
-    )
-    args_parser.add_argument(
         "-c",
         "--confidence",
         type=float,
@@ -55,7 +55,6 @@ if __name__ == '__main__':
     args = vars(args_parser.parse_args())
 
     # initialize a set of colors for our class labels
-    COLORS = np.random.uniform(0, 255, size=(args["num_classes"], 3))
 
     # initialize the model
     model = tf.Graph()
@@ -72,54 +71,61 @@ if __name__ == '__main__':
             tf.import_graph_def(graphDef, name="")
 
     # load the class labels from disk
-    labelMap = label_map_util.load_labelmap(args["labels"])
+    label_map = label_map_util.load_labelmap(args["labels"])
+    total_labels = len(label_map_util.get_label_map_dict(label_map).keys())
     categories = label_map_util.convert_label_map_to_categories(
-        labelMap, max_num_classes=args["num_classes"],
+        label_map, max_num_classes=total_labels,
         use_display_name=True)
     categoryIdx = label_map_util.create_category_index(categories)
+
+    # create a colors for each label
+    colors = np.random.uniform(0, 255, size=(total_labels, 3))
 
     # create a session to perform inference
     with model.as_default():
         with tf.Session(graph=model) as sess:
-            # grab a reference to the input image tensor and the boxes
-            # tensor
-            imageTensor = model.get_tensor_by_name("image_tensor:0")
-            boxesTensor = model.get_tensor_by_name("detection_boxes:0")
+            # grab a reference to the input image tensor and the boxes tensor
+            image_tensor = model.get_tensor_by_name("image_tensor:0")
+            boxes_tensor = model.get_tensor_by_name("detection_boxes:0")
 
             # for each bounding box we would like to know the score
             # (i.e., probability) and class label
-            scoresTensor = model.get_tensor_by_name("detection_scores:0")
-            classesTensor = model.get_tensor_by_name("detection_classes:0")
-            numDetections = model.get_tensor_by_name("num_detections:0")
+            scores_tensor = model.get_tensor_by_name("detection_scores:0")
+            classes_tensor = model.get_tensor_by_name("detection_classes:0")
+            num_detections_tensor = model.get_tensor_by_name("num_detections:0")
 
+            # loop over all files in the directory
             for file_name in os.listdir(args["images_dir"]):
+
+                # only process JPG files
                 if not file_name.endswith(".jpg"):
                     continue
 
                 # load the image from disk
                 image = cv2.imread(os.path.join(args["images_dir"], file_name))
-                (H, W) = image.shape[:2]
+                (height, width) = image.shape[:2]
 
                 # check to see if we should resize along the width
-                if W > H and W > 1000:
+                if (width > height) and (width > 1000):
                     image = imutils.resize(image, width=1000)
 
-                # otherwise, check to see if we should resize along the
-                # height
-                elif H > W and H > 1000:
+                # otherwise, check to see if we should resize along the height
+                elif (height > width) and (height > 1000):
                     image = imutils.resize(image, height=1000)
 
                 # prepare the image for detection
-                (H, W) = image.shape[:2]
+                (height, width) = image.shape[:2]
                 output = image.copy()
                 image = cv2.cvtColor(image.copy(), cv2.COLOR_BGR2RGB)
                 image = np.expand_dims(image, axis=0)
 
                 # perform inference and compute the bounding boxes,
                 # probabilities, and class labels
-                (boxes, scores, labels, N) = sess.run(
-                    [boxesTensor, scoresTensor, classesTensor, numDetections],
-                    feed_dict={imageTensor: image})
+                (boxes, scores, labels, N) = \
+                    sess.run(
+                        [boxes_tensor, scores_tensor, classes_tensor, num_detections_tensor],
+                        feed_dict={image_tensor: image},
+                    )
 
                 # squeeze the lists into a single dimension
                 boxes = np.squeeze(boxes)
@@ -128,27 +134,28 @@ if __name__ == '__main__':
 
                 # loop over the bounding box predictions
                 for (box, score, label) in zip(boxes, scores, labels):
+
                     # if the predicted probability is less than the minimum
                     # confidence, ignore it
                     if score < args["confidence"]:
                         continue
 
                     # scale the bounding box from the range [0, 1] to [W, H]
-                    (startY, startX, endY, endX) = box
-                    startX = int(startX * W)
-                    startY = int(startY * H)
-                    endX = int(endX * W)
-                    endY = int(endY * H)
+                    (start_y, start_x, end_y, end_x) = box
+                    start_x = int(start_x * width)
+                    start_y = int(start_y * height)
+                    end_x = int(end_x * width)
+                    end_y = int(end_y * height)
 
                     # draw the prediction on the output image
                     label = categoryIdx[label]
                     idx = int(label["id"]) - 1
                     label = "{}: {:.2f}".format(label["name"], score)
-                    cv2.rectangle(output, (startX, startY), (endX, endY),
-                                  COLORS[idx], 2)
-                    y = startY - 10 if startY - 10 > 10 else startY + 10
-                    cv2.putText(output, label, (startX, y),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.3, COLORS[idx], 1)
+                    cv2.rectangle(output, (start_x, start_y), (end_x, end_y),
+                                  colors[idx], 2)
+                    y = start_y - 10 if start_y - 10 > 10 else start_y + 10
+                    cv2.putText(output, label, (start_x, y),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.3, colors[idx], 1)
 
                 # show the output image
                 cv2.imshow("Output", output)
