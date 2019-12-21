@@ -146,7 +146,9 @@ if __name__ == '__main__':
     )
     args = vars(args_parser.parse_args())
 
-    # initialize a set of colors for our class labels
+    # allow for growth if on GPU
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
 
     # initialize the model
     model = tf.Graph()
@@ -168,7 +170,7 @@ if __name__ == '__main__':
     categories = label_map_util.convert_label_map_to_categories(
         label_map, max_num_classes=total_labels,
         use_display_name=True)
-    categoryIdx = label_map_util.create_category_index(categories)
+    category_index = label_map_util.create_category_index(categories)
 
     # create a colors for each label
     colors = np.random.uniform(0, 255, size=(total_labels, 3))
@@ -230,7 +232,7 @@ if __name__ == '__main__':
 
                     # if the predicted probability is less than the minimum
                     # confidence, ignore it
-                    if score < args["confidence"]:
+                    if (score < args["confidence"]) or (label not in category_index.keys()):
                         continue
 
                     # scale the bounding box from the range [0, 1] to [W, H]
@@ -241,7 +243,7 @@ if __name__ == '__main__':
                     end_y = int(end_y * height)
 
                     bbox = BoundingBox(
-                        label=categoryIdx[label]["name"],
+                        label=category_index[label]["name"],
                         xmin=start_x,
                         xmax=end_x,
                         ymin=start_y,
