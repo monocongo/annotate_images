@@ -1,12 +1,97 @@
 import argparse
 import os
+from typing import List
 
 import cv2
 import imutils
+import lxml.etree as etree
 import numpy as np
 import tensorflow as tf
+from tqdm import tqdm
 
 from object_detection.utils import label_map_util
+
+
+# ------------------------------------------------------------------------------
+class BoundingBox:
+
+    def __init__(
+            self,
+            label: str,
+            xmin: int,
+            ymin: int,
+            xmax: int,
+            ymax: int,
+            confidence: float,
+    ):
+        self.label = label
+        self.xmin = xmin
+        self.ymin = ymin
+        self.xmax = xmax
+        self.ymax = ymax
+        self.confidence = confidence
+
+
+# ------------------------------------------------------------------------------
+def to_pascal(
+        bboxes: List[BoundingBox],
+        image_file_name: str,
+        img_width: int,
+        img_height: int,
+        pascal_dir: str,
+) -> str:
+    """
+    Writes a PASCAL VOC (XML) annotation file containing the bounding boxes for
+    an image.
+
+    :param bboxes: iterable of bounding box objects
+    :param image_file_name: the image file name
+    :param pascal_dir: directory where the PASCAL file should be written
+    :return: path to the PASCAL VOC file
+    """
+
+    # get the image dimensions
+    annotation = etree.Element('annotation')
+    filename = etree.SubElement(annotation, "filename")
+    filename.text = image_file_name
+    source = etree.SubElement(annotation, "source")
+    database = etree.SubElement(source, "database")
+    database.text = "OpenImages"
+    size = etree.SubElement(annotation, "size")
+    width = etree.SubElement(size, "width")
+    width.text = str(img_width)
+    height = etree.SubElement(size, "height")
+    height.text = str(img_height)
+    depth = etree.SubElement(size, "depth")
+    depth.text = str(3)
+    segmented = etree.SubElement(annotation, "segmented")
+    segmented.text = "0"
+    for bbox in bboxes:
+        obj = etree.SubElement(annotation, "object")
+        name = etree.SubElement(obj, "name")
+        name.text = bbox.label
+        pose = etree.SubElement(obj, "pose")
+        pose.text = "Unspecified"
+        truncated = etree.SubElement(obj, "truncated")
+        truncated.text = "0"
+        difficult = etree.SubElement(obj, "difficult")
+        difficult.text = "0"
+        bndbox = etree.SubElement(obj, "bndbox")
+        xmin = etree.SubElement(bndbox, "xmin")
+        xmin.text = str(bbox.xmin)
+        xmax = etree.SubElement(bndbox, "xmax")
+        xmax.text = str(bbox.xmax)
+        ymin = etree.SubElement(bndbox, "ymin")
+        ymin.text = str(bbox.ymin)
+        ymax = etree.SubElement(bndbox, "ymax")
+        ymax.text = str(bbox.ymax)
+
+    # write the XML to file
+    pascal_file_path = os.path.join(pascal_dir, os.path.splitext(image_file_name)[0] + ".xml")
+    with open(pascal_file_path, 'w') as pascal_file:
+        pascal_file.write(etree.tostring(annotation, pretty_print=True, encoding='utf-8').decode("utf-8"))
+
+    return pascal_file_path
 
 
 # ------------------------------------------------------------------------------
@@ -49,8 +134,15 @@ if __name__ == '__main__':
         "-c",
         "--confidence",
         type=float,
-        default=0.5,
+        default=0.6,
         help="Minimum confidence probability required for detections",
+    )
+    args_parser.add_argument(
+        "--format",
+        required=True,
+        type=str,
+        choices=["darknet", "kitti", "pascal"],
+        help="Annotation format to be used",
     )
     args = vars(args_parser.parse_args())
 
@@ -95,14 +187,14 @@ if __name__ == '__main__':
             num_detections_tensor = model.get_tensor_by_name("num_detections:0")
 
             # loop over all files in the directory
-            for file_name in os.listdir(args["images_dir"]):
+            for image_file_name in tqdm(os.listdir(args["images_dir"])):
 
                 # only process JPG files
-                if not file_name.endswith(".jpg"):
+                if not image_file_name.endswith(".jpg"):
                     continue
 
                 # load the image from disk
-                image = cv2.imread(os.path.join(args["images_dir"], file_name))
+                image = cv2.imread(os.path.join(args["images_dir"], image_file_name))
                 (height, width) = image.shape[:2]
 
                 # check to see if we should resize along the width
@@ -133,6 +225,7 @@ if __name__ == '__main__':
                 labels = np.squeeze(labels)
 
                 # loop over the bounding box predictions
+                bboxes = []
                 for (box, score, label) in zip(boxes, scores, labels):
 
                     # if the predicted probability is less than the minimum
@@ -147,16 +240,18 @@ if __name__ == '__main__':
                     end_x = int(end_x * width)
                     end_y = int(end_y * height)
 
-                    # draw the prediction on the output image
-                    label = categoryIdx[label]
-                    idx = int(label["id"]) - 1
-                    label = "{}: {:.2f}".format(label["name"], score)
-                    cv2.rectangle(output, (start_x, start_y), (end_x, end_y),
-                                  colors[idx], 2)
-                    y = start_y - 10 if start_y - 10 > 10 else start_y + 10
-                    cv2.putText(output, label, (start_x, y),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.3, colors[idx], 1)
+                    bbox = BoundingBox(
+                        label=categoryIdx[label]["name"],
+                        xmin=start_x,
+                        xmax=end_x,
+                        ymin=start_y,
+                        ymax=end_y,
+                        confidence=score,
+                    )
+                    bboxes.append(bbox)
 
-                # show the output image
-                cv2.imshow("Output", output)
-                cv2.waitKey(0)
+                # write the bounding boxes into a PASCAL VOC annotation file
+                if args["format"] == "pascal":
+                    to_pascal(bboxes, image_file_name, width, height, args["annotations_dir"])
+                else:
+                    raise ValueError(f"Unsupported annotation format: {args['format']}")
